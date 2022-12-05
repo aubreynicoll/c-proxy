@@ -1,5 +1,5 @@
 CC = gcc
-FLAGS = -Wall -Werror
+FLAGS = -Wall -Wextra -Wpedantic
 
 main: main.c
 	$(CC) $(FLAGS) main.c
