@@ -281,8 +281,13 @@ ssize_t read_proxy_request(struct buffered_fd_t *bfd, char *buf,
 	if (count < 0)
 		return -1;
 
-	// save http method
+	// only support GET method
 	sscanf(linebuf, "%s", method);
+	if (strcmp(method, "GET")) {
+		buffered_writen(bfd, ERR_NOT_IMPLEMENTED,
+				strlen(ERR_NOT_IMPLEMENTED));
+		return -1;
+	}
 
 	memcpy(wp, linebuf, count);
 	wp += count;
@@ -297,13 +302,6 @@ ssize_t read_proxy_request(struct buffered_fd_t *bfd, char *buf,
 		memcpy(wp, linebuf, count);
 		wp += count;
 		capacity -= count;
-	}
-
-	// only support GET method
-	if (strcmp(method, "GET")) {
-		buffered_writen(bfd, ERR_NOT_IMPLEMENTED,
-				strlen(ERR_NOT_IMPLEMENTED));
-		return -1;
 	}
 
 	return wp - buf;
