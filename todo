@@ -1,0 +1,3 @@
+0. write buffered io for networked read/write
+1. update recv_http_request so that it can terminate without EOF (since the client will remain connected until response is sent)
+2. rewrite parse_request to use library functions for better error detection (also fail requests that are not GET)

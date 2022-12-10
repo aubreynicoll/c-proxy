@@ -1,3 +1,4 @@
+#include "bufio.h"
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
@@ -16,6 +17,7 @@
 #define HTTP_VER "HTTP/1.0"
 #define DEFAULT_PORT "80"
 #define CRLF "\r\n"
+#define ERR_NOT_IMPLEMENTED "HTTP/1.0 501 Not Implemented\r\n\r\n"
 
 #define STRLLEN(strl) sizeof strl - 1
 
@@ -23,11 +25,9 @@ static const char *ignored_headers[] = {"Connection", "Proxy-Connection",
 					"User-Agent"};
 static const char *proxy_headers[] = {
     "Connection: close\r\n", "Proxy-Connection: close\r\n",
-    "User-Agent: "
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/108.0.0.0 Safari/537.36\r\n"};
+    "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36\r\n"};
 
-int parse_request(char *src, char *dst, char *hostname, char *port) {
+int parse_proxy_request(char *src, char *dst, char *hostname, char *port) {
 	char *rp = src, *wp = dst;
 
 	// trim leading whitespace
@@ -268,78 +268,61 @@ int getclientfd(const char *host, const char *service) {
 	return clientfd;
 }
 
-/**
- * Reads bytes into the provided buffer until the buffer is full, EOF, or error.
- * Returns -1 on error.
- */
-int recv_all(int connfd, char *buf, int capacity) {
-	int bytes_read, total = 0;
-	while ((bytes_read = read(connfd, buf + total, capacity - total))) {
-		if (bytes_read < 0) {
+ssize_t read_proxy_request(struct buffered_fd_t *bfd, char *buf,
+			   size_t capacity) {
+	char *wp = buf;
+	ssize_t count;
+
+	char linebuf[8192];
+	char method[16];
+
+	// read reqline
+	count = buffered_readline(bfd, linebuf, sizeof linebuf);
+	if (count < 0)
+		return -1;
+
+	// save http method
+	sscanf(linebuf, "%s", method);
+
+	memcpy(wp, linebuf, count);
+	wp += count;
+	capacity -= count;
+
+	// get headers
+	while (strcmp(linebuf, CRLF)) {
+		count = buffered_readline(bfd, linebuf, sizeof linebuf);
+		if (count < 0)
 			return -1;
-		}
-		total += bytes_read;
+
+		memcpy(wp, linebuf, count);
+		wp += count;
+		capacity -= count;
 	}
 
-	if (total == capacity) {
-		printf("WARNING: buffer limit reached\n");
+	// only support GET method
+	if (strcmp(method, "GET")) {
+		buffered_writen(bfd, ERR_NOT_IMPLEMENTED,
+				strlen(ERR_NOT_IMPLEMENTED));
+		return -1;
 	}
 
-	return total;
-}
-
-/**
- * Reads bytes into the provided buffer until the request is terminated with a
- * null line, EOF, buf capacity is reached, or error. Returns -1 on error.
- */
-int recv_http_request(int connfd, char *buf, int capacity) {
-	// TODO handle http request body
-	int bytes_read, total = 0;
-	while ((bytes_read = read(connfd, buf + total, capacity - total))) {
-		if (bytes_read < 0) {
-			return -1;
-		}
-		total += bytes_read;
-		if (!strncmp(buf + total - 4, "\r\n\r\n", 4))
-			break;
-	}
-
-	if (total == capacity) {
-		printf("WARNING: buffer limit reached\n");
-	}
-
-	return total;
-}
-
-/**
- * Sends bytes from the provided buffer until error or all bytes have been sent.
- * Returns -1 on error.
- */
-int send_all(int connfd, char *buf, int len) {
-	int bytes_written, total = 0;
-	while ((bytes_written = write(connfd, buf + total, len - total))) {
-		if (bytes_written < 0) {
-			return -1;
-		}
-		total += bytes_written;
-	}
-	return total;
+	return wp - buf;
 }
 
 int main() {
 	int listenfd = SOCK_UNSET;
-
 	listenfd = getlistenfd("8080");
 
 	while (1) {
 		int connfd = SOCK_UNSET, clientfd = SOCK_UNSET;
-		char connaddrbuf[INET6_ADDRSTRLEN] = {0};
+		struct buffered_fd_t bufconnfd, bufclientfd;
+		char connaddrbuf[INET6_ADDRSTRLEN];
 
 		int bytes_received, bytes_sent;
-		char buf[HTTPBUFSIZE] = {0};
-		char parsed[HTTPBUFSIZE] = {0};
-		char host[512] = {0};
-		char port[8] = {0};
+		char buf[HTTPBUFSIZE];
+		char parsed[HTTPBUFSIZE];
+		char host[512];
+		char port[8];
 
 		// accept a client connection
 		connfd = getconnfd(listenfd, connaddrbuf, sizeof connaddrbuf);
@@ -349,16 +332,19 @@ int main() {
 		}
 		printf("***%s CONNECTED TO PROXY***\n", connaddrbuf);
 
+		buffered_fd_init(&bufconnfd, connfd);
+
 		// read req from client
-		bytes_received = recv_http_request(connfd, buf, sizeof buf);
+		bytes_received =
+		    read_proxy_request(&bufconnfd, buf, sizeof buf);
 		if (bytes_received < 0) {
-			fprintf(stderr, "recv_http_request: %s\n",
+			fprintf(stderr, "read_proxy_request: %s\n",
 				strerror(errno));
 			goto close_connection;
 		}
 
 		// parse request
-		int parsed_len = parse_request(buf, parsed, host, port);
+		int parsed_len = parse_proxy_request(buf, parsed, host, port);
 		if (parsed_len >= HTTPBUFSIZE) {
 			fprintf(stderr,
 				"BUFFER OVERRUN: copied %d bytes to size %d\n",
@@ -366,6 +352,7 @@ int main() {
 			exit(1);
 		}
 
+		// TODO delete these printf statements
 		printf("%s %s\n", host, port);
 		printf("raw:\n%s\n", buf);
 		printf("parsed:\n%s\n", parsed);
@@ -377,22 +364,24 @@ int main() {
 			goto close_connection;
 		}
 
+		buffered_fd_init(&bufclientfd, clientfd);
+
 		// send req to remote host
-		bytes_sent = send_all(clientfd, parsed, parsed_len);
+		bytes_sent = buffered_writen(&bufclientfd, parsed, parsed_len);
 		if (bytes_sent < 0) {
 			fprintf(stderr, "send_all: %s\n", strerror(errno));
 			goto close_connection;
 		}
 
 		// read res from remote host
-		bytes_received = recv_all(clientfd, buf, sizeof buf);
+		bytes_received = buffered_readn(&bufclientfd, buf, sizeof buf);
 		if (bytes_received < 0) {
 			fprintf(stderr, "recv_all: %s\n", strerror(errno));
 			goto close_connection;
 		}
 
 		// forward res to client
-		bytes_sent = send_all(connfd, buf, bytes_received);
+		bytes_sent = buffered_writen(&bufconnfd, buf, bytes_received);
 		if (bytes_sent < 0) {
 			fprintf(stderr, "send_all: %s\n", strerror(errno));
 			goto close_connection;
@@ -405,6 +394,9 @@ int main() {
 		if (connfd != SOCK_UNSET)
 			close(connfd);
 	}
+
+	if (listenfd != SOCK_UNSET)
+		close(listenfd);
 
 	exit(0);
 }
