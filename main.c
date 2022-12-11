@@ -129,33 +129,29 @@ ssize_t read_proxy_request(struct buffered_fd_t *bfd, char *buf,
 	char *wp = buf;
 	ssize_t count;
 
-	char linebuf[8192];
-	char method[16];
-
 	// read reqline
-	count = buffered_readline(bfd, linebuf, sizeof linebuf);
+	count = buffered_readline(bfd, wp, capacity);
 	if (count < 0)
 		return -1;
 
-	// only support GET method
-	sscanf(linebuf, "%s", method);
-	if (strcmp(method, "GET")) {
+	// only support GET method for now
+	char method[16];
+	sscanf(wp, "%s", method);
+	if (strcasecmp(method, "GET")) {
 		buffered_writen(bfd, ERR_NOT_IMPLEMENTED,
 				strlen(ERR_NOT_IMPLEMENTED));
 		return -1;
 	}
 
-	memcpy(wp, linebuf, count);
 	wp += count;
 	capacity -= count;
 
 	// get headers
-	while (strcmp(linebuf, CRLF)) {
-		count = buffered_readline(bfd, linebuf, sizeof linebuf);
+	while (strcmp(wp - count, CRLF)) {
+		count = buffered_readline(bfd, wp, capacity);
 		if (count < 0)
 			return -1;
 
-		memcpy(wp, linebuf, count);
 		wp += count;
 		capacity -= count;
 	}
