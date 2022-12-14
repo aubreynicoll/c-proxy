@@ -13,7 +13,7 @@ The goal of the lab is to create a simple forward proxy in C. The proxy should b
 - Support only GET requests
 - Otherwise support operations as specified in RFC 1945 (except for multi-line headers, which were not a requirement)
 - Implement some form of concurrency
-- Implement some form of caching
+- Implement some form of caching (Not yet implemented)
 
 ## Outcomes
 I learned a ton by doing this exercise, and while my solution is far from passable as a real, working proxy, 
