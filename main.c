@@ -2,7 +2,9 @@
 #include "nethelpers.h"
 #include <ctype.h>
 #include <errno.h>
+#include <malloc.h>
 #include <netdb.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,11 @@
 #define ERR_BAD_REQUEST "HTTP/1.0 400 BAD REQUEST\r\n\r\n"
 
 #define STRLLEN(strl) sizeof strl - 1
+
+typedef struct vargp_s {
+	int connfd;
+	char connaddrbuf[INET6_ADDRSTRLEN];
+} vargp_t;
 
 static const char *ignored_headers[] = {"Connection", "Proxy-Connection",
 					"User-Agent"};
@@ -169,90 +176,115 @@ ssize_t read_proxy_request(struct buffered_fd_t *bfd, char *buf,
 	return wp - buf;
 }
 
+void *thread_start(void *vargp) {
+	// start up
+	pthread_detach(pthread_self());
+	vargp_t *args = vargp;
+
+	// main code here
+	printf("***%s CONNECTED TO PROXY***\n", args->connaddrbuf);
+
+	struct buffered_fd_t bufconnfd, bufclientfd;
+	ssize_t bytes_received, bytes_sent;
+	int clientfd = SOCK_UNSET;
+
+	char buf[HTTPBUFSIZE];
+	char parsed[HTTPBUFSIZE];
+	char host[512];
+	char port[8];
+
+	buffered_fd_init(&bufconnfd, args->connfd);
+
+	// read req from client
+	bytes_received = read_proxy_request(&bufconnfd, buf, sizeof buf);
+	if (bytes_received < 0) {
+		fprintf(stderr, "read_proxy_request: %s\n", strerror(errno));
+		goto close_connection;
+	}
+
+	// parse request
+	int parsed_len = parse_proxy_request(buf, parsed, host, port);
+	if (parsed_len >= HTTPBUFSIZE) {
+		fprintf(stderr, "BUFFER OVERRUN: copied %d bytes to size %d\n",
+			parsed_len, HTTPBUFSIZE);
+		exit(1);
+	}
+
+	// TODO delete these printf statements
+	printf("%s %s\n", host, port);
+	printf("raw:\n%s\n", buf);
+	printf("parsed:\n%s\n", parsed);
+
+	// connect to remote host
+	clientfd = getclientfd(host, port);
+	if (clientfd < 0) {
+		fprintf(stderr, "getclientfd: %s\n", strerror(errno));
+		goto close_connection;
+	}
+
+	buffered_fd_init(&bufclientfd, clientfd);
+
+	// send req to remote host
+	bytes_sent = buffered_writen(&bufclientfd, parsed, parsed_len);
+	if (bytes_sent < 0) {
+		fprintf(stderr, "send_all: %s\n", strerror(errno));
+		goto close_connection;
+	}
+
+	// read res from remote host
+	bytes_received = buffered_readn(&bufclientfd, buf, sizeof buf);
+	if (bytes_received < 0) {
+		fprintf(stderr, "recv_all: %s\n", strerror(errno));
+		goto close_connection;
+	}
+
+	// forward res to client
+	bytes_sent = buffered_writen(&bufconnfd, buf, bytes_received);
+	if (bytes_sent < 0) {
+		fprintf(stderr, "send_all: %s\n", strerror(errno));
+		goto close_connection;
+	}
+
+close_connection:
+	printf("***%s DISCONNECTED FROM PROXY***\n", args->connaddrbuf);
+	if (clientfd != SOCK_UNSET)
+		close(clientfd);
+	if (args->connfd != SOCK_UNSET)
+		close(args->connfd);
+
+	// end thread
+	free(args);
+	pthread_exit(NULL);
+}
+
 int main() {
 	int listenfd = SOCK_UNSET;
 	listenfd = getlistenfd("8080");
 
 	while (1) {
-		int connfd = SOCK_UNSET, clientfd = SOCK_UNSET;
-		struct buffered_fd_t bufconnfd, bufclientfd;
-		char connaddrbuf[INET6_ADDRSTRLEN];
-
-		ssize_t bytes_received, bytes_sent;
-		char buf[HTTPBUFSIZE];
-		char parsed[HTTPBUFSIZE];
-		char host[512];
-		char port[8];
-
-		// accept a client connection
-		connfd = getconnfd(listenfd, connaddrbuf, sizeof connaddrbuf);
-		if (connfd < 0) {
-			fprintf(stderr, "getconnfd: %s\n", strerror(errno));
-			continue; // no open sockets at this point
-		}
-		printf("***%s CONNECTED TO PROXY***\n", connaddrbuf);
-
-		buffered_fd_init(&bufconnfd, connfd);
-
-		// read req from client
-		bytes_received =
-		    read_proxy_request(&bufconnfd, buf, sizeof buf);
-		if (bytes_received < 0) {
-			fprintf(stderr, "read_proxy_request: %s\n",
-				strerror(errno));
-			goto close_connection;
-		}
-
-		// parse request
-		int parsed_len = parse_proxy_request(buf, parsed, host, port);
-		if (parsed_len >= HTTPBUFSIZE) {
-			fprintf(stderr,
-				"BUFFER OVERRUN: copied %d bytes to size %d\n",
-				parsed_len, HTTPBUFSIZE);
+		int status;
+		pthread_t tid;
+		vargp_t *args = malloc(sizeof(vargp_t));
+		if (args == NULL) {
+			fprintf(stderr, "malloc: %s\n", strerror(errno));
 			exit(1);
 		}
 
-		// TODO delete these printf statements
-		printf("%s %s\n", host, port);
-		printf("raw:\n%s\n", buf);
-		printf("parsed:\n%s\n", parsed);
-
-		// connect to remote host
-		clientfd = getclientfd(host, port);
-		if (clientfd < 0) {
-			fprintf(stderr, "getclientfd: %s\n", strerror(errno));
-			goto close_connection;
+		// accept a client connection
+		args->connfd = getconnfd(listenfd, args->connaddrbuf,
+					 sizeof args->connaddrbuf);
+		if (args->connfd < 0) {
+			fprintf(stderr, "getconnfd: %s\n", strerror(errno));
+			free(args);
+			continue; // no open sockets at this point
 		}
 
-		buffered_fd_init(&bufclientfd, clientfd);
-
-		// send req to remote host
-		bytes_sent = buffered_writen(&bufclientfd, parsed, parsed_len);
-		if (bytes_sent < 0) {
-			fprintf(stderr, "send_all: %s\n", strerror(errno));
-			goto close_connection;
+		status = pthread_create(&tid, NULL, thread_start, args);
+		if (status != 0) {
+			fprintf(stderr, "pthread_create: %s\n",
+				strerror(errno));
+			exit(1);
 		}
-
-		// read res from remote host
-		bytes_received = buffered_readn(&bufclientfd, buf, sizeof buf);
-		if (bytes_received < 0) {
-			fprintf(stderr, "recv_all: %s\n", strerror(errno));
-			goto close_connection;
-		}
-
-		// forward res to client
-		bytes_sent = buffered_writen(&bufconnfd, buf, bytes_received);
-		if (bytes_sent < 0) {
-			fprintf(stderr, "send_all: %s\n", strerror(errno));
-			goto close_connection;
-		}
-
-	close_connection:
-		printf("***%s DISCONNECTED FROM PROXY***\n", connaddrbuf);
-		if (clientfd != SOCK_UNSET)
-			close(clientfd);
-		if (connfd != SOCK_UNSET)
-			close(connfd);
 	}
 
 	if (listenfd != SOCK_UNSET)
