@@ -19,9 +19,12 @@ The goal of the lab is to create a simple forward proxy in C. The proxy should b
 I learned a ton by doing this exercise, and while my solution is far from passable as a real, working proxy, 
 it's certainly whetted my appetite to learn more about UNIX network programming.
 
+In addition to pushing the limits of my knowledge of C programming, 
+it was also the first time I'd predominantly used a white-paper as a technical reference, rather than "giving in" and looking for friendlier documentation. Perhaps that's why the code appears to be written by a complete git.
+
 Key APIs used in the project include sockets and pthreads, as well as system-level I/O. 
 Additionally, string processing played a major role, and in some ways
-was the most difficult part of the project. I certainly made some attempts at trying to keep things as speedy as possible, 
+was the most difficult part of the project. I made some attempts at trying to keep things as speedy as possible, 
 and in retrospect I feel like that led to some code of rather questionable quality. 
 If you're a recruiter, please don't read the code in parse_proxy_request.
 
@@ -30,4 +33,5 @@ From here, I intend to continue learning more about system level network program
 ## Resources
 *Computer Systems: A Programmer's Perspective*, by Randal Bryant & David O'Hallaron, as well as their excellent lectures  
 *Beej's Guide to Network Programming*, by Brian "Beej" Hall  
-The Linux Man Pages, maintained by Michael Kerrisk
+The Linux Man Pages, maintained by Michael Kerrisk  
+RFC 1945, by T. Berners-Lee, et al.
