@@ -16,6 +16,7 @@
 #define DEFAULT_PORT "80"
 #define CRLF "\r\n"
 #define ERR_NOT_IMPLEMENTED "HTTP/1.0 501 Not Implemented\r\n\r\n"
+#define ERR_BAD_REQUEST "HTTP/1.0 400 BAD REQUEST\r\n\r\n"
 
 #define STRLLEN(strl) sizeof strl - 1
 
@@ -25,7 +26,7 @@ static const char *proxy_headers[] = {
     "Connection: close\r\n", "Proxy-Connection: close\r\n",
     "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36\r\n"};
 
-int parse_proxy_request(char *src, char *dst, char *hostname, char *port) {
+ssize_t parse_proxy_request(char *src, char *dst, char *hostname, char *port) {
 	char *rp = src, *wp = dst;
 
 	// trim leading whitespace
@@ -134,9 +135,18 @@ ssize_t read_proxy_request(struct buffered_fd_t *bfd, char *buf,
 	if (count < 0)
 		return -1;
 
-	// only support GET method for now
+	// check for valid request line
 	char method[16];
-	sscanf(wp, "%s", method);
+	char uri[512];
+	char httpver[16];
+
+	int scanned = sscanf(wp, "%s %s %s\r\n", method, uri, httpver);
+	if (scanned < 3 || strncasecmp(uri, HTTP_SCHEME, strlen(HTTP_SCHEME))) {
+		buffered_writen(bfd, ERR_BAD_REQUEST, strlen(ERR_BAD_REQUEST));
+		return -1;
+	}
+
+	// only support GET method for now
 	if (strcasecmp(method, "GET")) {
 		buffered_writen(bfd, ERR_NOT_IMPLEMENTED,
 				strlen(ERR_NOT_IMPLEMENTED));
@@ -168,7 +178,7 @@ int main() {
 		struct buffered_fd_t bufconnfd, bufclientfd;
 		char connaddrbuf[INET6_ADDRSTRLEN];
 
-		int bytes_received, bytes_sent;
+		ssize_t bytes_received, bytes_sent;
 		char buf[HTTPBUFSIZE];
 		char parsed[HTTPBUFSIZE];
 		char host[512];

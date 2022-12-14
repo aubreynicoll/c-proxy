@@ -1,1 +1,3 @@
-0. rewrite parse_request to use library functions for better error detection (also fail requests that are not GET)
+server loop into a function
+implement pthreads for concurrency
+handle all types of requests
